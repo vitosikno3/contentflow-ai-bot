@@ -28,3 +28,4 @@ python main.py
 
 ## Деплой
 - Railway / Render: добавьте переменные окружения `BOT_TOKEN`, `OPENAI_API_KEY`, задеплойте репозиторий.
+# contentflow-ai-bot
