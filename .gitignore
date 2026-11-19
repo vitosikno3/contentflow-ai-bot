@@ -4,3 +4,4 @@ data/users.json
 .env
 data/users.json
 __pycache__/
+led_photozone/corner/export/
