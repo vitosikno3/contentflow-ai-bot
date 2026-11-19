@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>LED фотозона — Новый год</title>
+<style>
+  @font-face { font-family: 'GV'; src: url(fonts/gv-cyr.woff2) format('woff2'); unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+  @font-face { font-family: 'GV'; src: url(fonts/gv-lat.woff2) format('woff2'); }
+  @font-face { font-family: 'MS'; font-weight: 100 900; src: url(fonts/ms-cyr.woff2) format('woff2'); unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+  @font-face { font-family: 'MS'; font-weight: 100 900; src: url(fonts/ms-lat.woff2) format('woff2'); }
+  html, body { margin: 0; background: #000; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<!--
+  НАСТРОЙКИ: меняйте текст и разрешение здесь (или через ?wallW=..&wallH=..&floor=..)
+  Стены: 2 панели 1,5 × 2,0 м  → по умолчанию 1080 × 1440 px каждая (общая 2160 × 1440)
+  Пол:   1,5 × 1,5 м           → по умолчанию 1080 × 1080 px
+-->
+<canvas id="walls"></canvas>
+<canvas id="floor"></canvas>
+<script>
+const Q = new URLSearchParams(location.search);
+const CFG = {
+  wallW: +(Q.get('wallW') || 1080),       // ширина ОДНОЙ стены, px
+  wallH: +(Q.get('wallH') || 1440),
+  floor: +(Q.get('floor') || 1080),
+  line1: Q.get('line1') || 'С Новым',
+  line2: Q.get('line2') || 'Годом!',
+  company1: Q.get('company1') || 'ВАША',
+  company2: Q.get('company2') || 'КОМПАНИЯ',
+};
+const W = CFG.wallW * 2, H = CFG.wallH, F = CFG.floor;
+const S = H / 1440;              // масштаб относительно базового макета
+const TAU = Math.PI * 2;
+
+const wc = document.getElementById('walls'); wc.width = W; wc.height = H;
+const fc = document.getElementById('floor'); fc.width = F; fc.height = F;
+const wx = wc.getContext('2d'), fx = fc.getContext('2d');
+
+// ---------- детерминированный генератор ----------
+let seed = 20262027;
+function rnd() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+const R = (a, b) => a + (b - a) * rnd();
+const RI = (a, b) => Math.floor(R(a, b + 1));
+function mk(w, h) { const c = document.createElement('canvas'); c.width = Math.ceil(w); c.height = Math.ceil(h); return c; }
+
+// ---------- спрайты свечения ----------
+function glowSprite(r, rgb, core = 0.9) {
+  const c = mk(r * 2, r * 2), g = c.getContext('2d');
+  const gr = g.createRadialGradient(r, r, 0, r, r, r);
+  gr.addColorStop(0, `rgba(255,255,255,${core})`);
+  gr.addColorStop(0.12, `rgba(${rgb},0.85)`);
+  gr.addColorStop(0.35, `rgba(${rgb},0.25)`);
+  gr.addColorStop(1, `rgba(${rgb},0)`);
+  g.fillStyle = gr; g.fillRect(0, 0, r * 2, r * 2); return c;
+}
+const GOLD = glowSprite(64, '255,196,90');
+const GOLDS = glowSprite(64, '255,170,50', 0.35);
+const ICE = glowSprite(64, '150,200,255');
+const WHITE = glowSprite(64, '230,240,255');
+function blit(ctx, spr, x, y, size, a = 1) {
+  if (a <= 0.003) return;
+  ctx.globalAlpha = Math.min(1, a);
+  ctx.drawImage(spr, x - size / 2, y - size / 2, size, size);
+}
+function star4(ctx, x, y, r, a, rot = 0, col = '255,240,210') { // лучистая искра
+  if (a <= 0.01) return;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.globalAlpha = a;
+  ctx.fillStyle = `rgb(${col})`;
+  for (let k = 0; k < 2; k++) {
+    ctx.beginPath(); ctx.moveTo(-r, 0); ctx.quadraticCurveTo(0, -r * 0.08, r, 0); ctx.quadraticCurveTo(0, r * 0.08, -r, 0); ctx.fill();
+    ctx.rotate(Math.PI / 2);
+  }
+  ctx.restore();
+}
+
+// ---------- снежинка-кристалл ----------
+function snowflakeSprite(r, col = 'rgba(225,240,255,1)', lw = 3) {
+  const c = mk(r * 2 + 8, r * 2 + 8), g = c.getContext('2d');
+  g.translate(r + 4, r + 4); g.strokeStyle = col; g.lineCap = 'round'; g.lineWidth = lw;
+  g.shadowColor = 'rgba(160,210,255,0.9)'; g.shadowBlur = lw * 3;
+  for (let i = 0; i < 6; i++) {
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(0, -r); g.stroke();
+    for (const [d, l] of [[0.35, 0.28], [0.6, 0.22], [0.82, 0.13]]) {
+      g.beginPath(); g.moveTo(0, -r * d); g.lineTo(-r * l, -r * (d + l * 0.8)); g.moveTo(0, -r * d); g.lineTo(r * l, -r * (d + l * 0.8)); g.stroke();
+    }
+    g.rotate(TAU / 6);
+  }
+  g.beginPath(); g.arc(0, 0, r * 0.12, 0, TAU); g.stroke();
+  return c;
+}
+
+// =====================================================================
+//                         СТАТИЧНЫЙ ФОН СТЕН
+// =====================================================================
+const BG = mk(W, H);
+(function buildBG() {
+  const g = BG.getContext('2d');
+  let gr = g.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, '#020a2e'); gr.addColorStop(0.45, '#0a2a8a'); gr.addColorStop(0.75, '#0d3db8'); gr.addColorStop(1, '#0a2c86');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  // туманности
+  const blobs = [[W * 0.5, H * 0.45, 900, '40,110,255', 0.45], [W * 0.18, H * 0.3, 600, '20,60,200', 0.5], [W * 0.82, H * 0.35, 650, '30,80,230', 0.45], [W * 0.5, H * 0.75, 700, '90,160,255', 0.35]];
+  for (const [x, y, r, c, a] of blobs) { const q = g.createRadialGradient(x, y, 0, x, y, r * S); q.addColorStop(0, `rgba(${c},${a})`); q.addColorStop(1, `rgba(${c},0)`); g.fillStyle = q; g.fillRect(0, 0, W, H); }
+  // звёздная пыль
+  for (let i = 0; i < 2600; i++) { const x = R(0, W), y = R(0, H * 0.8), r = R(0.4, 1.6) * S; g.fillStyle = `rgba(200,225,255,${R(0.08, 0.6)})`; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill(); }
+  // далёкие снежные холмы и ели
+  function tree(x, base, h, tone) {
+    const w = h * 0.42, tiers = 5;
+    for (let t = 0; t < tiers; t++) {
+      const ty = base - h * (t / tiers) * 0.92, tw = w * (1 - t / tiers * 0.78), th = h * 0.36;
+      const q = g.createLinearGradient(x, ty - th, x, ty);
+      q.addColorStop(0, `rgba(235,245,255,${tone})`); q.addColorStop(0.5, `rgba(120,170,235,${tone})`); q.addColorStop(1, `rgba(25,60,140,${tone})`);
+      g.fillStyle = q; g.beginPath(); g.moveTo(x, ty - th);
+      const n = 7; for (let k = 0; k <= n; k++) { const f = k / n; g.lineTo(x + tw * f, ty - th * (1 - f) + (k % 2 ? -th * 0.08 : th * 0.04)); }
+      g.lineTo(x - tw, ty); for (let k = n; k >= 0; k--) { const f = k / n; g.lineTo(x - tw * f, ty - th * (1 - f) + (k % 2 ? -th * 0.08 : th * 0.04)); }
+      g.closePath(); g.fill();
+    }
+  }
+  function hill(baseY, amp, col1, col2, ph) {
+    const q = g.createLinearGradient(0, baseY - amp, 0, H); q.addColorStop(0, col1); q.addColorStop(1, col2);
+    g.fillStyle = q; g.beginPath(); g.moveTo(0, H);
+    for (let x = 0; x <= W; x += 8) g.lineTo(x, baseY - amp * (0.5 + 0.5 * Math.sin(x / W * TAU * 1.5 + ph)) - amp * 0.3 * Math.sin(x / W * TAU * 4 + ph * 2));
+    g.lineTo(W, H); g.closePath(); g.fill();
+  }
+  hill(H * 0.80, 70 * S, 'rgba(140,185,250,0.55)', 'rgba(40,90,190,0.6)', 1.2);
+  for (let i = 0; i < 26; i++) { const x = R(0, W); if (Math.abs(x - W / 2) < 180 * S) continue; tree(x, H * R(0.80, 0.86), R(110, 200) * S, 0.55); }
+  hill(H * 0.88, 60 * S, 'rgba(200,225,255,0.9)', 'rgba(70,120,215,0.9)', 2.6);
+  // крупные ели по краям
+  const big = [[0.03, 430], [0.11, 330], [0.19, 250], [0.30, 180], [0.70, 190], [0.80, 260], [0.89, 340], [0.97, 440]];
+  for (const [fxp, h] of big) tree(W * fxp, H * 0.95, h * S, 0.98);
+  hill(H * 0.955, 40 * S, 'rgba(235,245,255,1)', 'rgba(120,165,235,1)', 0.4);
+})();
+
+// ---------- еловые ветви ----------
+function branchSprite(len, flip) {
+  const c = mk(len * 1.1, len * 0.75), g = c.getContext('2d');
+  const r0 = mk(1, 1);
+  g.lineCap = 'round';
+  function needlesAlong(x0, y0, x1, y1, cx, cy, nl, thick) {
+    const steps = Math.floor(Math.hypot(x1 - x0, y1 - y0) / (3 * S));
+    for (let i = 0; i < steps; i++) {
+      const t = i / steps, u = 1 - t;
+      const x = u * u * x0 + 2 * u * t * cx + t * t * x1, y = u * u * y0 + 2 * u * t * cy + t * t * y1;
+      const dx = 2 * u * (cx - x0) + 2 * t * (x1 - cx), dy = 2 * u * (cy - y0) + 2 * t * (y1 - cy);
+      const ang = Math.atan2(dy, dx), L = nl * (0.55 + 0.45 * Math.sin(t * Math.PI)) * (t > 0.9 ? 0.6 : 1);
+      for (const side of [-1, 1]) {
+        const a = ang + side * R(0.55, 0.95);
+        const w = R(0.25, 0.9);
+        g.strokeStyle = `rgba(${170 + 80 * w | 0},${205 + 45 * w | 0},255,${R(0.55, 0.95)})`;
+        g.lineWidth = thick * R(0.7, 1.1);
+        g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * L * R(0.8, 1.15), y + Math.sin(a) * L * R(0.8, 1.15)); g.stroke();
+      }
+    }
+    g.strokeStyle = 'rgba(70,110,170,0.9)'; g.lineWidth = thick * 1.4;
+    g.beginPath(); g.moveTo(x0, y0); g.quadraticCurveTo(cx, cy, x1, y1); g.stroke();
+  }
+  g.shadowColor = 'rgba(150,200,255,0.8)'; g.shadowBlur = 6 * S;
+  // главная ветвь из угла
+  const L = len;
+  const main = [0, 0, L * 0.98, L * 0.5, L * 0.5, L * 0.1];
+  const twigs = [];
+  for (let i = 0; i < 9; i++) {
+    const t = 0.12 + i * 0.095; const u = 1 - t;
+    const x = u * u * main[0] + 2 * u * t * main[4] + t * t * main[2], y = u * u * main[1] + 2 * u * t * main[5] + t * t * main[3];
+    const side = i % 2 ? 1 : -1, tl = L * (0.32 - t * 0.17);
+    const a = 0.45 + side * 0.65;
+    twigs.push([x, y, x + Math.cos(a) * tl, y + Math.sin(a) * tl, x + Math.cos(a - side * 0.25) * tl * 0.5, y + Math.sin(a - side * 0.25) * tl * 0.5]);
+  }
+  for (const t of twigs) needlesAlong(t[0], t[1], t[2], t[3], t[4], t[5], 26 * S, 2.2 * S);
+  needlesAlong(main[0], main[1], main[2], main[3], main[4], main[5], 38 * S, 2.6 * S);
+  // иней
+  g.shadowBlur = 0;
+  for (let i = 0; i < 260; i++) { g.fillStyle = `rgba(255,255,255,${R(0.3, 0.9)})`; g.beginPath(); g.arc(R(0, L), R(0, L * 0.7), R(0.6, 2) * S, 0, TAU); g.fill(); }
+  if (!flip) return c;
+  const f = mk(c.width, c.height), h = f.getContext('2d'); h.translate(c.width, 0); h.scale(-1, 1); h.drawImage(c, 0, 0); return f;
+}
+const BR_L = branchSprite(620 * S, false), BR_L2 = branchSprite(430 * S, false);
+const BR_R = branchSprite(620 * S, true), BR_R2 = branchSprite(430 * S, true);
+
+// ---------- ёлочные шары ----------
+function ornamentSprite(r) {
+  const c = mk(r * 2.6, r * 2.9), g = c.getContext('2d'), cx = c.width / 2, cy = r * 1.55;
+  // свечение
+  let q = g.createRadialGradient(cx, cy, r * 0.8, cx, cy, r * 1.3); q.addColorStop(0, 'rgba(140,200,255,0.35)'); q.addColorStop(1, 'rgba(140,200,255,0)');
+  g.fillStyle = q; g.fillRect(0, 0, c.width, c.height);
+  // стеклянная сфера
+  q = g.createRadialGradient(cx - r * 0.35, cy - r * 0.4, r * 0.05, cx, cy, r);
+  q.addColorStop(0, 'rgba(255,255,255,0.95)'); q.addColorStop(0.25, 'rgba(170,215,255,0.55)'); q.addColorStop(0.75, 'rgba(40,90,200,0.45)'); q.addColorStop(1, 'rgba(200,230,255,0.9)');
+  g.fillStyle = q; g.beginPath(); g.arc(cx, cy, r, 0, TAU); g.fill();
+  g.strokeStyle = 'rgba(230,245,255,0.9)'; g.lineWidth = 2 * S; g.stroke();
+  // внутренние искры
+  for (let i = 0; i < 40; i++) { const a = R(0, TAU), d = Math.sqrt(rnd()) * r * 0.85; g.fillStyle = `rgba(255,${R(220, 250) | 0},${R(170, 240) | 0},${R(0.4, 1)})`; g.beginPath(); g.arc(cx + Math.cos(a) * d, cy + Math.sin(a) * d, R(0.8, 2.6) * S, 0, TAU); g.fill(); }
+  // блик
+  g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = r * 0.09; g.lineCap = 'round';
+  g.beginPath(); g.arc(cx, cy, r * 0.78, Math.PI * 1.08, Math.PI * 1.42); g.stroke();
+  // золотой колпачок
+  q = g.createLinearGradient(cx - r * 0.22, 0, cx + r * 0.22, 0); q.addColorStop(0, '#8a5a12'); q.addColorStop(0.5, '#ffe39a'); q.addColorStop(1, '#8a5a12');
+  g.fillStyle = q; g.fillRect(cx - r * 0.2, cy - r - r * 0.2, r * 0.4, r * 0.24);
+  g.strokeStyle = '#e8c070'; g.lineWidth = 2.5 * S; g.beginPath(); g.arc(cx, cy - r - r * 0.26, r * 0.09, 0, TAU); g.stroke();
+  return { c, cx, top: cy - r - r * 0.35, cy };
+}
+
+// ---------- объекты сцены ----------
+const ORN = [ // x (доля ширины), длина нити, радиус, амплитуда, фаза
+  [0.105, 640, 62, 0.05, 0.0], [0.30, 300, 46, 0.07, 0.3], [0.395, 470, 36, 0.06, 0.65],
+  [0.66, 360, 44, 0.06, 0.15], [0.765, 560, 62, 0.05, 0.5], [0.905, 300, 48, 0.07, 0.8],
+].map(([x, len, r, amp, ph]) => ({ x: x * W, len: len * S, amp, ph, spr: ornamentSprite(r * S) }));
+
+const SNOW = [];
+for (let i = 0; i < 520; i++) SNOW.push({ x: R(0, W), y: R(0, 1), k: RI(1, 3), s: R(1.2, 4.2) * S, a: R(0.35, 0.95), m: RI(1, 2), amp: R(6, 30) * S, ph: R(0, 1) });
+const FLAKES = [];
+const fl = [[0.07, 0.30, 55], [0.25, 0.20, 40], [0.33, 0.48, 30], [0.16, 0.60, 34], [0.62, 0.42, 30], [0.72, 0.16, 38], [0.93, 0.42, 52], [0.85, 0.62, 32], [0.47, 0.12, 24], [0.56, 0.86, 22]];
+for (const [x, y, r] of fl) FLAKES.push({ x: x * W, y: y * H, spr: snowflakeSprite(r * S, undefined, Math.max(1.5, r / 14) * S), r: r * S, dir: rnd() < 0.5 ? -1 : 1, ph: R(0, 1) });
+const SMALLFLAKE = snowflakeSprite(14 * S, 'rgba(235,245,255,1)', 1.6 * S);
+const FALLFLAKES = [];
+for (let i = 0; i < 40; i++) FALLFLAKES.push({ x: R(0, W), y: R(0, 1), k: 1, sz: R(14, 30) * S, a: R(0.5, 0.95), ph: R(0, 1), rot: rnd() < 0.5 ? -1 : 1 });
+const TWINK = [];
+for (let i = 0; i < 160; i++) TWINK.push({ x: R(0, W), y: R(0, H * 0.75), r: R(6, 22) * S, n: RI(1, 3), ph: R(0, 1) });
+const GLINT = []; // искры на снегу
+for (let i = 0; i < 140; i++) GLINT.push({ x: R(0, W), y: R(H * 0.86, H), r: R(5, 16) * S, n: RI(1, 4), ph: R(0, 1) });
+
+// ---------- текст и логотип ----------
+let TEXT = null;
+function buildText() {
+  const fs = 250 * S;
+  const c = mk(W, H * 0.6), g = c.getContext('2d');
+  g.textBaseline = 'alphabetic'; g.font = `${fs}px GV`;
+  const lines = [[CFG.line1, W * 0.47, H * 0.40], [CFG.line2, W * 0.53, H * 0.555]];
+  g.save(); g.translate(W / 2, H * 0.45); g.rotate(-0.07); g.translate(-W / 2, -H * 0.45);
+  for (const [t, x, y] of lines) { g.textAlign = 'center'; g.fillStyle = '#fff'; g.fillText(t, x, y - H * 0.0); }
+  g.restore();
+  // маска → золото
+  const gold = mk(W, H * 0.6), q = gold.getContext('2d');
+  const gr = q.createLinearGradient(0, H * 0.22, 0, H * 0.58);
+  gr.addColorStop(0, '#fff6d8'); gr.addColorStop(0.35, '#ffd77a'); gr.addColorStop(0.55, '#d79b2e'); gr.addColorStop(0.75, '#ffe7a6'); gr.addColorStop(1, '#b8781e');
+  q.fillStyle = gr; q.fillRect(0, 0, W, H); q.globalCompositeOperation = 'destination-in'; q.drawImage(c, 0, 0);
+  // свечение
+  const glow = mk(W, H * 0.6), z = glow.getContext('2d');
+  z.filter = `blur(${18 * S}px)`; z.drawImage(gold, 0, 0); z.filter = 'none';
+  TEXT = { mask: c, gold, glow, tmp: mk(W, H * 0.6) };
+}
+function buildLogo() {
+  const c = mk(520 * S, 300 * S), g = c.getContext('2d'), cx = c.width / 2;
+  g.fillStyle = '#fff'; g.shadowColor = 'rgba(160,210,255,0.9)'; g.shadowBlur = 14 * S;
+  // иконка «здание»
+  const bw = 22 * S, gap = 9 * S, hs = [62, 84, 96, 84, 62];
+  const tot = hs.length * bw + (hs.length - 1) * gap;
+  hs.forEach((h, i) => { const x = cx - tot / 2 + i * (bw + gap); g.fillRect(x, 110 * S - h * S, bw, h * S); });
+  g.fillRect(cx - tot / 2 - 8 * S, 112 * S, tot + 16 * S, 6 * S);
+  g.textAlign = 'center'; g.font = `600 ${48 * S}px MS`;
+  g.fillText(CFG.company1, cx, 185 * S); g.fillText(CFG.company2, cx, 240 * S);
+  return c;
+}
+let LOGO = null;
+
+// ---------- спиральная ёлка ----------
+function spiralTree(ctx, cx, base, h, rw, p, alpha = 1, flipY = 1) {
+  ctx.globalCompositeOperation = 'lighter';
+  const N = 260;
+  for (let ribbon = 0; ribbon < 2; ribbon++) {
+    for (let i = 0; i < N; i++) {
+      const u = i / N, ang = TAU * (4.2 * u + ribbon * 0.5) - TAU * p * 2;
+      const r = rw * (1 - u) * (0.95 + 0.05 * Math.sin(u * 40));
+      const depth = Math.cos(ang);
+      const x = cx + Math.sin(ang) * r, y = base - flipY * u * h + flipY * depth * r * 0.12;
+      const b = (0.35 + 0.65 * (depth * 0.5 + 0.5)) * (ribbon ? 0.75 : 1);
+      blit(ctx, GOLDS, x, y, (22 + 16 * b) * S * (1 - u * 0.4), b * 0.30 * alpha);
+    }
+  }
+  // бегущие огоньки вверх по спирали
+  for (let j = 0; j < 36; j++) {
+    const u = (j / 36 + p) % 1, ang = TAU * (4.2 * u + (j % 2) * 0.5) - TAU * p * 2;
+    const r = rw * (1 - u), depth = Math.cos(ang);
+    const x = cx + Math.sin(ang) * r, y = base - flipY * u * h + flipY * depth * r * 0.12;
+    const fade = Math.sin(u * Math.PI);
+    blit(ctx, GOLD, x, y, 34 * S, 0.8 * fade * (0.4 + 0.6 * (depth * 0.5 + 0.5)) * alpha);
+  }
+  // звезда
+  const pulse = 0.75 + 0.25 * Math.sin(TAU * p * 3);
+  blit(ctx, GOLDS, cx, base - flipY * h - flipY * 12 * S, 150 * S * pulse, 0.8 * alpha);
+  star4(ctx, cx, base - flipY * h - flipY * 12 * S, 60 * S * pulse, alpha, TAU * p * 0.5, '255,245,215');
+  star4(ctx, cx, base - flipY * h - flipY * 12 * S, 34 * S * pulse, alpha * 0.8, TAU * p * 0.5 + Math.PI / 4);
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+}
+
+// =====================================================================
+//                              КАДР СТЕН
+// =====================================================================
+function renderWalls(p) {
+  const g = wx;
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  g.drawImage(BG, 0, 0);
+
+  // мягкое северное сияние
+  g.globalCompositeOperation = 'lighter';
+  for (let k = 0; k < 3; k++) {
+    const y0 = H * (0.18 + k * 0.09);
+    g.beginPath();
+    for (let x = 0; x <= W; x += 20) {
+      const y = y0 + Math.sin(x / W * TAU * (1 + k) + TAU * p * (k % 2 ? 1 : -1) + k) * 50 * S;
+      x ? g.lineTo(x, y) : g.moveTo(x, y);
+    }
+    g.lineWidth = (90 - k * 20) * S; g.strokeStyle = `rgba(${60 + k * 30},${150 + k * 20},255,${0.05 + 0.03 * Math.sin(TAU * (p + k / 3))})`;
+    g.filter = `blur(${30 * S}px)`; g.stroke(); g.filter = 'none';
+  }
+  g.globalCompositeOperation = 'source-over';
+
+  // мерцающие звёзды
+  g.globalCompositeOperation = 'lighter';
+  for (const t of TWINK) { const a = Math.pow(0.5 + 0.5 * Math.sin(TAU * (t.n * p + t.ph)), 3); blit(g, ICE, t.x, t.y, t.r * 2.2, a * 0.7); star4(g, t.x, t.y, t.r, a * 0.8, 0, '220,235,255'); }
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+
+  // крупные кристаллические снежинки
+  for (const f of FLAKES) {
+    const tw = 0.55 + 0.45 * Math.sin(TAU * (p + f.ph));
+    g.save(); g.translate(f.x, f.y + Math.sin(TAU * (p + f.ph)) * 10 * S); g.rotate(f.dir * TAU * p / 6); g.globalAlpha = 0.5 + 0.5 * tw;
+    g.drawImage(f.spr, -f.spr.width / 2, -f.spr.height / 2); g.restore();
+  }
+
+  // логотип
+  g.globalAlpha = 0.92 + 0.08 * Math.sin(TAU * p);
+  g.drawImage(LOGO, W / 2 - LOGO.width / 2, H * 0.085);
+  g.globalAlpha = 1;
+
+  // текст с пробегающим бликом
+  const ty = H * 0.18;
+  g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.55 + 0.25 * Math.sin(TAU * p * 2);
+  g.drawImage(TEXT.glow, 0, ty); g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  g.drawImage(TEXT.gold, 0, ty);
+  const tc = TEXT.tmp.getContext('2d');
+  tc.globalCompositeOperation = 'source-over'; tc.clearRect(0, 0, W, H);
+  const sx = -W * 0.4 + ((p * 1.0) % 1) * W * 1.8; // один проход за цикл
+  const sg = tc.createLinearGradient(sx - 160 * S, 0, sx + 160 * S, 0);
+  sg.addColorStop(0, 'rgba(255,255,255,0)'); sg.addColorStop(0.5, 'rgba(255,255,240,0.95)'); sg.addColorStop(1, 'rgba(255,255,255,0)');
+  tc.save(); tc.translate(sx, H * 0.3); tc.transform(1, 0, -0.5, 1, 0, 0); tc.translate(-sx, -H * 0.3);
+  tc.fillStyle = sg; tc.fillRect(sx - 400 * S, -H, 800 * S, H * 3); tc.restore();
+  tc.globalCompositeOperation = 'destination-in'; tc.drawImage(TEXT.mask, 0, 0);
+  g.globalCompositeOperation = 'lighter'; g.drawImage(TEXT.tmp, 0, ty); g.globalCompositeOperation = 'source-over';
+
+  // золотые искры вокруг надписи
+  g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 28; i++) {
+    const a = TAU * (i / 28) + TAU * p * (i % 2 ? 1 : -1) * 0.25;
+    const x = W / 2 + Math.cos(a) * (520 + 80 * Math.sin(i * 1.7)) * S, y = H * 0.44 + Math.sin(a) * (220 + 40 * Math.cos(i)) * S;
+    const tw = Math.pow(0.5 + 0.5 * Math.sin(TAU * (2 * p + i * 0.137)), 4);
+    blit(g, GOLD, x, y, 40 * S, tw * 0.9); star4(g, x, y, 22 * S * tw, tw, 0, '255,230,170');
+  }
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+
+  // ветви и шары
+  const sway = (ph, a) => a * Math.sin(TAU * (p + ph));
+  function drawBranch(spr, x, y, rot) { g.save(); g.translate(x, y); g.rotate(rot); g.drawImage(spr, 0, 0); g.restore(); }
+  function drawBranchR(spr, x, y, rot) { g.save(); g.translate(x, y); g.rotate(rot); g.drawImage(spr, -spr.width, 0); g.restore(); }
+  for (const o of ORN) {
+    const th = sway(o.ph, o.amp), ex = o.x + Math.sin(th) * o.len, ey = Math.cos(th) * o.len;
+    g.strokeStyle = 'rgba(230,200,140,0.8)'; g.lineWidth = 1.6 * S; g.beginPath(); g.moveTo(o.x, 0); g.lineTo(ex, ey); g.stroke();
+    g.save(); g.translate(ex, ey); g.rotate(-th); g.drawImage(o.spr.c, -o.spr.cx, -o.spr.top); g.restore();
+    const sp = Math.pow(0.5 + 0.5 * Math.sin(TAU * (2 * p + o.ph)), 6);
+    g.globalCompositeOperation = 'lighter';
+    star4(g, ex - o.spr.c.width * 0.13, ey + (o.spr.cy - o.spr.top) - o.spr.c.width * 0.13, 30 * S * sp, sp);
+    g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  }
+  drawBranch(BR_L2, -20 * S, 120 * S, 0.35 + sway(0.2, 0.015));
+  drawBranch(BR_L, -40 * S, -40 * S, 0.12 + sway(0, 0.012));
+  drawBranchR(BR_R2, W + 20 * S, 120 * S, -0.35 + sway(0.6, 0.015));
+  drawBranchR(BR_R, W + 40 * S, -40 * S, -0.12 + sway(0.45, 0.012));
+
+  // спиральная ёлка
+  spiralTree(g, W / 2, H * 0.975, 300 * S, 120 * S, p);
+
+  // искры на снегу
+  g.globalCompositeOperation = 'lighter';
+  for (const s of GLINT) { const a = Math.pow(0.5 + 0.5 * Math.sin(TAU * (s.n * p + s.ph)), 8); star4(g, s.x, s.y, s.r * a, a, 0, '230,240,255'); }
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+
+  // падающий снег (бесшовный)
+  const span = H + 60 * S;
+  g.fillStyle = '#fff';
+  for (const s of SNOW) {
+    const y = ((s.y + s.k * p) % 1) * span - 30 * S, x = s.x + Math.sin(TAU * (s.m * p + s.ph)) * s.amp;
+    g.globalAlpha = s.a; g.beginPath(); g.arc(x, y, s.s, 0, TAU); g.fill();
+  }
+  for (const s of FALLFLAKES) {
+    const y = ((s.y + p) % 1) * span - 30 * S, x = s.x + Math.sin(TAU * (p + s.ph)) * 30 * S;
+    g.save(); g.globalAlpha = s.a; g.translate(x, y); g.rotate(s.rot * TAU * p); const k = s.sz / (14 * S); g.scale(k, k);
+    g.drawImage(SMALLFLAKE, -SMALLFLAKE.width / 2, -SMALLFLAKE.height / 2); g.restore();
+  }
+  g.globalAlpha = 1;
+}
+
+// =====================================================================
+//                               ПОЛ
+// =====================================================================
+const FBG = mk(F, F);
+(function buildFloor() {
+  const g = FBG.getContext('2d'), s = F / 1080;
+  let q = g.createRadialGradient(F / 2, F / 2, 0, F / 2, F / 2, F * 0.75);
+  q.addColorStop(0, '#1d5ad6'); q.addColorStop(0.5, '#0c2f8f'); q.addColorStop(1, '#041246');
+  g.fillStyle = q; g.fillRect(0, 0, F, F);
+  // ледяные трещины
+  g.lineCap = 'round';
+  for (let i = 0; i < 90; i++) {
+    let x = R(0, F), y = R(0, F), a = R(0, TAU);
+    g.strokeStyle = `rgba(190,225,255,${R(0.05, 0.22)})`; g.lineWidth = R(0.6, 2) * s; g.beginPath(); g.moveTo(x, y);
+    for (let k = 0; k < RI(3, 9); k++) { a += R(-0.7, 0.7); x += Math.cos(a) * R(20, 70) * s; y += Math.sin(a) * R(20, 70) * s; g.lineTo(x, y); }
+    g.stroke();
+  }
+  // иней по краям
+  for (let i = 0; i < 1800; i++) {
+    const x = R(0, F), y = R(0, F), d = Math.min(x, y, F - x, F - y) / F;
+    if (rnd() > Math.pow(1 - d * 2.2, 2)) continue;
+    g.fillStyle = `rgba(230,240,255,${R(0.15, 0.6)})`; g.beginPath(); g.arc(x, y, R(0.6, 2.4) * s, 0, TAU); g.fill();
+  }
+  // снежная кайма
+  q = g.createLinearGradient(0, 0, 0, F);
+  for (const side of [0, 1, 2, 3]) {
+    g.save(); g.translate(F / 2, F / 2); g.rotate(side * Math.PI / 2); g.translate(-F / 2, -F / 2);
+    const e = g.createLinearGradient(0, 0, 0, 90 * s); e.addColorStop(0, 'rgba(220,235,255,0.55)'); e.addColorStop(1, 'rgba(220,235,255,0)');
+    g.fillStyle = e; g.fillRect(0, 0, F, 90 * s); g.restore();
+  }
+})();
+const FSNOW = []; for (let i = 0; i < 220; i++) FSNOW.push({ a0: R(0, TAU), r: R(0.08, 0.72), k: rnd() < 0.5 ? -1 : 1, sz: R(1, 3.2), al: R(0.3, 0.9), ph: R(0, 1) });
+const FFLAKES = []; for (let i = 0; i < 14; i++) FFLAKES.push({ x: R(0.08, 0.92) * F, y: R(0.08, 0.92) * F, spr: snowflakeSprite(R(26, 52) * F / 1080, 'rgba(225,240,255,0.9)', 2 * F / 1080), ph: R(0, 1), dir: rnd() < 0.5 ? -1 : 1 });
+const FTW = []; for (let i = 0; i < 120; i++) FTW.push({ x: R(0, F), y: R(0, F), r: R(6, 18), n: RI(1, 3), ph: R(0, 1) });
+
+function renderFloor(p) {
+  const g = fx, s = F / 1080, c = F / 2;
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  g.drawImage(FBG, 0, 0);
+  // волны света по льду
+  g.globalCompositeOperation = 'lighter';
+  for (let k = 0; k < 4; k++) {
+    const rr = ((k / 4 + p) % 1) * F * 0.75;
+    g.strokeStyle = `rgba(120,190,255,${0.18 * (1 - rr / (F * 0.75))})`; g.lineWidth = 26 * s; g.filter = `blur(${12 * s}px)`;
+    g.beginPath(); g.arc(c, c, rr, 0, TAU); g.stroke(); g.filter = 'none';
+  }
+  // большая снежинка-мандала
+  g.save(); g.translate(c, c); g.rotate(TAU * p / 6);
+  g.strokeStyle = 'rgba(190,225,255,0.25)'; g.lineWidth = 3 * s;
+  for (let i = 0; i < 6; i++) {
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(0, -420 * s); g.stroke();
+    for (const [d, l] of [[150, 90], [250, 70], [340, 45]]) { g.beginPath(); g.moveTo(0, -d * s); g.lineTo(-l * s, -(d + l * 0.8) * s); g.moveTo(0, -d * s); g.lineTo(l * s, -(d + l * 0.8) * s); g.stroke(); }
+    g.rotate(TAU / 6);
+  }
+  g.restore();
+  // золотая спираль (вид сверху)
+  for (let arm = 0; arm < 3; arm++) {
+    for (let i = 0; i < 120; i++) {
+      const u = i / 120, ang = TAU * (arm / 3 + u * 1.4) + TAU * p, rr = u * 360 * s;
+      const x = c + Math.cos(ang) * rr, y = c + Math.sin(ang) * rr;
+      blit(g, GOLDS, x, y, (40 - 22 * u) * s, 0.28 * (1 - u * 0.6));
+    }
+    for (let j = 0; j < 10; j++) {
+      const u = ((j / 10) + p) % 1, ang = TAU * (arm / 3 + u * 1.4) + TAU * p, rr = u * 360 * s;
+      blit(g, GOLD, c + Math.cos(ang) * rr, c + Math.sin(ang) * rr, 40 * s, Math.sin(u * Math.PI) * 0.7);
+    }
+  }
+  const pulse = 0.8 + 0.2 * Math.sin(TAU * p * 3);
+  blit(g, GOLDS, c, c, 220 * s * pulse, 0.8);
+  star4(g, c, c, 90 * s * pulse, 1, TAU * p * 0.5, '255,245,215');
+  star4(g, c, c, 55 * s * pulse, 0.8, TAU * p * 0.5 + Math.PI / 4);
+  // искры
+  for (const t of FTW) { const a = Math.pow(0.5 + 0.5 * Math.sin(TAU * (t.n * p + t.ph)), 6); star4(g, t.x, t.y, t.r * s * a, a, 0, '220,235,255'); }
+  // кружащий снег
+  g.fillStyle = '#fff';
+  for (const f of FSNOW) {
+    const a = f.a0 + f.k * TAU * p, rr = f.r * F * (1 + 0.05 * Math.sin(TAU * (p + f.ph)));
+    g.globalAlpha = f.al * (0.6 + 0.4 * Math.sin(TAU * (2 * p + f.ph))); g.beginPath(); g.arc(c + Math.cos(a) * rr, c + Math.sin(a) * rr, f.sz * s, 0, TAU); g.fill();
+  }
+  g.globalCompositeOperation = 'source-over';
+  for (const f of FFLAKES) {
+    g.save(); g.translate(f.x, f.y); g.rotate(f.dir * TAU * p / 3); g.globalAlpha = 0.35 + 0.35 * Math.sin(TAU * (p + f.ph)) + 0.3;
+    g.drawImage(f.spr, -f.spr.width / 2, -f.spr.height / 2); g.restore();
+  }
+  // блик-отражение по диагонали
+  g.globalCompositeOperation = 'lighter'; g.globalAlpha = 1;
+  const sx = -F * 0.5 + p * F * 2;
+  const sg = g.createLinearGradient(sx - 120 * s, sx - 120 * s, sx + 120 * s, sx + 120 * s);
+  sg.addColorStop(0, 'rgba(180,220,255,0)'); sg.addColorStop(0.5, 'rgba(180,220,255,0.12)'); sg.addColorStop(1, 'rgba(180,220,255,0)');
+  g.fillStyle = sg; g.fillRect(0, 0, F, F);
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+}
+
+window.ready = (async () => {
+  await document.fonts.load(`100px GV`, 'С Новым Годом!');
+  await document.fonts.load(`600 40px MS`, 'ВАША КОМПАНИЯ');
+  buildText(); LOGO = buildLogo();
+  return true;
+})();
+window.renderFrame = (p) => { renderWalls(p); renderFloor(p); };
+
+// живой предпросмотр в браузере (если открыть файл напрямую)
+if (!Q.has('render')) {
+  const T = 12000; window.ready.then(() => { const loop = (ms) => { window.renderFrame((ms % T) / T); requestAnimationFrame(loop); }; requestAnimationFrame(loop); });
+  document.body.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:10px';
+  wc.style.width = '90vw'; fc.style.width = '45vw';
+}
+</script>
+</body>
+</html>
