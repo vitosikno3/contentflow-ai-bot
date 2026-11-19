@@ -6,3 +6,4 @@ data/users.json
 __pycache__/
 led_photozone/corner/export/
 led_photozone/corner_v2/export/
+led_photozone/videos_v2/**/*.mp4
