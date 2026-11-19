@@ -1,5 +1,5 @@
 """Нарезка 3:2 картинки на две стены + макет угловой фотозоны с силуэтами людей.
-python3 mockup.py walls_3x2.png floor_1x1.png out_prefix
+python3 mockup.py walls_3x2.png floor_1x1.png|- out_prefix   ('-' = без пола)
 """
 import sys
 import numpy as np
@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 walls_p, floor_p, out = sys.argv[1:4]
 walls = Image.open(walls_p).convert('RGB')
-floor = Image.open(floor_p).convert('RGB')
+floor = None if floor_p == '-' else Image.open(floor_p).convert('RGB')
 
 # --- нарезка под экраны: каждая стена 1,5 x 2,0 м (3:4) ---
 W, H = walls.size
@@ -17,8 +17,9 @@ if W != target_w:  # подрезаем до точного 3:2
     walls = walls.crop((x0, 0, x0 + target_w, H)); W = target_w
 L = walls.crop((0, 0, W // 2, H)).resize((1080, 1440), Image.LANCZOS)
 R = walls.crop((W // 2, 0, W, H)).resize((1080, 1440), Image.LANCZOS)
-F = floor.resize((1080, 1080), Image.LANCZOS)
-L.save(f'{out}_wall_LEFT_1080x1440.png'); R.save(f'{out}_wall_RIGHT_1080x1440.png'); F.save(f'{out}_floor_1080x1080.png')
+L.save(f'{out}_wall_LEFT_1080x1440.png'); R.save(f'{out}_wall_RIGHT_1080x1440.png')
+if floor is not None:
+    F = floor.resize((1080, 1080), Image.LANCZOS); F.save(f'{out}_floor_1080x1080.png')
 
 
 def coeffs(dst, src):  # перспективное преобразование: dst-квадрат -> src
@@ -50,7 +51,10 @@ floor_q = [(cx, mid), (cx + lw, mid + depth * 0.55), (cx, mid + depth * 1.1), (c
 for img, q in [(L, left_q), (R, right_q)]:
     o, m = warp(img, q, S); canvas.paste(o, (0, 0), m)
 # пол: квадрат повёрнут так, что его угол уходит в сгиб
-o, m = warp(F.rotate(0), floor_q, S); canvas.paste(o, (0, 0), m)
+if floor is not None:
+    o, m = warp(F, floor_q, S); canvas.paste(o, (0, 0), m)
+else:  # обычный пол зала
+    ImageDraw.Draw(canvas).polygon(floor_q, fill=(38, 34, 40))
 # лёгкая тень в углу
 sh = Image.new('L', S, 0); ImageDraw.Draw(sh).line([(cx, top), (cx, mid)], fill=90, width=30)
 canvas.paste((0, 0, 0), (0, 0), sh.filter(ImageFilter.GaussianBlur(25)))
